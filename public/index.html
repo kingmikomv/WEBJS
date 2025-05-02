@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code WhatsApp Web</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 40px;
+        }
+
+        #qrContainer {
+            margin-top: 20px;
+        }
+
+        img {
+            max-width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Scan QR untuk Login WhatsApp</h1>
+
+    <button id="startButton">Mulai</button>
+
+    <div id="qrContainer"></div>
+
+    <script>
+        let intervalId = null;
+
+        document.getElementById('startButton').addEventListener('click', function () {
+            const sessionId = 'userA'; // Ganti sesuai kebutuhan
+
+            // Hentikan interval sebelumnya jika ada
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+
+            function fetchQR() {
+                fetch(`/api/start?session_id=${sessionId}`)
+                    .then(response => response.text())
+                    .then(html => {
+                        document.getElementById('qrContainer').innerHTML = html;
+                    })
+                    .catch(error => {
+                        console.error('Error fetching QR code:', error);
+                        document.getElementById('qrContainer').innerHTML = '<p style="color:red;">Gagal mengambil QR code</p>';
+                    });
+            }
+
+            fetchQR(); // Ambil QR pertama kali
+            intervalId = setInterval(fetchQR, 10000); // Refresh tiap 10 detik
+        });
+    </script>
+</body>
+</html>
