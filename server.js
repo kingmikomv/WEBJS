@@ -15,8 +15,6 @@ app.use(cors({
     allowedHeaders: ['Content-Type'],
 }));
 
-//app.use(express.static(path.join(__dirname, 'public')));
-
 const sessions = {};
 const qrCodes = {};
 const SESSIONS_DIR = './sessions';
@@ -65,12 +63,16 @@ app.get('/api/qr', (req, res) => {
     const sessionId = req.query.session_id;
     if (!sessionId) return res.status(400).json({ message: 'session_id is required' });
 
-    const qrImage = qrCodes[sessionId];
-    if (qrImage) {
-        return res.json({ qrImage });
-    } else {
-        return res.json({ message: 'QR belum tersedia atau sudah login' });
+    if (qrCodes[sessionId]) {
+        return res.json({ status: 'scan', qrImage: qrCodes[sessionId] });
     }
+
+    const client = sessions[sessionId];
+    if (client && client.info && client.info.wid) {
+        return res.json({ status: 'connected' });
+    }
+
+    return res.json({ status: 'not_found' });
 });
 
 app.get('/api/status', (req, res) => {
@@ -78,16 +80,16 @@ app.get('/api/status', (req, res) => {
     const client = sessions[sessionId];
     if (!client) return res.status(404).json({ status: false, message: 'Client tidak ditemukan' });
 
-    if (client.info && client.info.wid) {
+    try {
         const user = {
-            id: client.info.wid.user,
-            name: client.info.pushname || '-',
-            battery: client.info.battery || '-',
+            id: client.info?.wid?.user || '-',
+            name: client.info?.pushname || '-',
+            battery: client.info?.battery || '-',
         };
         return res.json({ status: true, user });
+    } catch (e) {
+        return res.json({ status: false, message: 'Client belum siap' });
     }
-
-    return res.json({ status: false });
 });
 
 app.post('/api/send', async (req, res) => {
