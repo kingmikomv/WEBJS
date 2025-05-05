@@ -17,14 +17,16 @@ app.use(cors({
 
 const sessions = {};
 const qrCodes = {};
-const SESSIONS_DIR = './sessions';
+const readyFlags = {}; // 🆕 status siap
 
+const SESSIONS_DIR = './sessions';
 if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR);
 }
 
 const createClient = (sessionId) => {
     const sessionPath = path.join(SESSIONS_DIR, sessionId);
+
     const client = new Client({
         authStrategy: new LocalAuth({ dataPath: sessionPath }),
         puppeteer: {
@@ -33,15 +35,39 @@ const createClient = (sessionId) => {
         }
     });
 
+    readyFlags[sessionId] = false;
+
     client.on('qr', async (qr) => {
         const qrImage = await qrcode.toDataURL(qr);
         qrCodes[sessionId] = qrImage;
-        console.log(`📸 QR updated for ${sessionId}`);
+        readyFlags[sessionId] = false;
+        console.log(`📸 QR diperbarui untuk ${sessionId}`);
+    });
+
+    client.on('authenticated', () => {
+        console.log(`🔐 ${sessionId} terautentikasi`);
     });
 
     client.on('ready', () => {
-        console.log(`✅ ${sessionId} is ready`);
+        console.log(`✅ ${sessionId} siap digunakan`);
         delete qrCodes[sessionId];
+        readyFlags[sessionId] = true;
+    });
+
+    client.on('disconnected', (reason) => {
+        console.log(`❌ ${sessionId} terputus: ${reason}`);
+        client.destroy();
+        delete sessions[sessionId];
+        delete qrCodes[sessionId];
+        delete readyFlags[sessionId];
+    });
+
+    client.on('auth_failure', (msg) => {
+        console.log(`⚠️ Auth failure untuk ${sessionId}:`, msg);
+        client.destroy();
+        delete sessions[sessionId];
+        delete qrCodes[sessionId];
+        delete readyFlags[sessionId];
     });
 
     client.initialize();
@@ -63,13 +89,14 @@ app.get('/api/qr', (req, res) => {
     const sessionId = req.query.session_id;
     if (!sessionId) return res.status(400).json({ message: 'session_id is required' });
 
-    if (qrCodes[sessionId]) {
-        return res.json({ status: 'scan', qrImage: qrCodes[sessionId] });
+    const isReady = readyFlags[sessionId];
+    if (isReady) {
+        return res.json({ status: 'connected' });
     }
 
-    const client = sessions[sessionId];
-    if (client && client.info && client.info.wid) {
-        return res.json({ status: 'connected' });
+    const qr = qrCodes[sessionId];
+    if (qr) {
+        return res.json({ status: 'scan', qrImage: qr });
     }
 
     return res.json({ status: 'not_found' });
@@ -78,7 +105,11 @@ app.get('/api/qr', (req, res) => {
 app.get('/api/status', (req, res) => {
     const sessionId = req.query.session_id;
     const client = sessions[sessionId];
+    const isReady = readyFlags[sessionId];
+
     if (!client) return res.status(404).json({ status: false, message: 'Client tidak ditemukan' });
+
+    if (!isReady) return res.status(200).json({ status: false, message: 'Client belum siap' });
 
     try {
         const user = {
@@ -88,7 +119,7 @@ app.get('/api/status', (req, res) => {
         };
         return res.json({ status: true, user });
     } catch (e) {
-        return res.json({ status: false, message: 'Client belum siap' });
+        return res.json({ status: false, message: 'Gagal ambil info client' });
     }
 });
 
@@ -97,7 +128,7 @@ app.post('/api/send', async (req, res) => {
     if (!session_id || !number || !message) return res.status(400).send('Missing parameters');
 
     const client = sessions[session_id];
-    if (!client) return res.status(404).send('Session not found or not ready');
+    if (!client || !readyFlags[session_id]) return res.status(404).send('Session not found or not ready');
 
     try {
         await client.sendMessage(`${number}@c.us`, message);
