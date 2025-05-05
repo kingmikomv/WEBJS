@@ -139,6 +139,36 @@ app.post('/api/send', async (req, res) => {
     }
 });
 
+app.get('/api/disconnect', (req, res) => {
+    const sessionId = req.query.session_id;
+    if (!sessionId) return res.status(400).json({ message: 'session_id is required' });
+
+    const client = sessions[sessionId];
+    if (!client) return res.status(404).json({ message: 'Session not found' });
+
+    client.destroy()
+        .then(() => {
+            // Menghapus session dari objek sessions
+            delete sessions[sessionId];
+            delete qrCodes[sessionId];
+            delete readyFlags[sessionId];
+
+            // Menghapus direktori session yang terkait dengan sessionId
+            const sessionPath = path.join(SESSIONS_DIR, sessionId);
+            if (fs.existsSync(sessionPath)) {
+                fs.rmdirSync(sessionPath, { recursive: true });
+                console.log(`🗑️ Sesi ${sessionId} terputus dan direktori session dihapus`);
+            }
+
+            res.json({ message: `Session ${sessionId} berhasil terputus dan file session dihapus` });
+        })
+        .catch((err) => {
+            console.error('Gagal disconnect:', err);
+            res.status(500).json({ message: 'Gagal disconnect sesi' });
+        });
+});
+
+
 app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 Server berjalan di http://localhost:${port}`);
 });
