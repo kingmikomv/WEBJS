@@ -169,6 +169,7 @@ app.get('/api/disconnect', (req, res) => {
                 fs.rmSync(sessionPath, { recursive: true, force: true });
                 console.log(`🗑️ Sesi ${sessionId} terputus dan folder dihapus`);
             }
+            createClient(sessionId);
 
             res.json({ message: `Session ${sessionId} berhasil diputus dan file dihapus` });
         })
