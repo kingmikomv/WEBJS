@@ -17,13 +17,14 @@ app.use(cors({
 
 const sessions = {};
 const qrCodes = {};
-const readyFlags = {}; // 🆕 status siap
+const readyFlags = {}; // Status siap
 
 const SESSIONS_DIR = './sessions';
 if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR);
 }
 
+// Fungsi untuk membuat client baru
 const createClient = (sessionId) => {
     const sessionPath = path.join(SESSIONS_DIR, sessionId);
 
@@ -63,7 +64,7 @@ const createClient = (sessionId) => {
     });
 
     client.on('auth_failure', (msg) => {
-        console.log(`⚠️ Auth failure untuk ${sessionId}:`, msg);
+        console.log(`⚠️ Gagal autentikasi untuk ${sessionId}:`, msg);
         client.destroy();
         delete sessions[sessionId];
         delete qrCodes[sessionId];
@@ -74,20 +75,22 @@ const createClient = (sessionId) => {
     sessions[sessionId] = client;
 };
 
+// Endpoint untuk memulai sesi
 app.get('/api/start', (req, res) => {
     const sessionId = req.query.session_id;
-    if (!sessionId) return res.status(400).json({ message: 'session_id is required' });
+    if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
 
     if (!sessions[sessionId]) {
         createClient(sessionId);
     }
 
-    return res.json({ message: 'Session started' });
+    return res.json({ message: 'Sesi dimulai' });
 });
 
+// Endpoint untuk mendapatkan QR code
 app.get('/api/qr', (req, res) => {
     const sessionId = req.query.session_id;
-    if (!sessionId) return res.status(400).json({ message: 'session_id is required' });
+    if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
 
     const isReady = readyFlags[sessionId];
     if (isReady) {
@@ -99,9 +102,16 @@ app.get('/api/qr', (req, res) => {
         return res.json({ status: 'scan', qrImage: qr });
     }
 
+    // Jika client belum dibuat (terhapus karena disconnect/logout), buat ulang
+    if (!sessions[sessionId]) {
+        createClient(sessionId);
+        return res.json({ status: 'initializing', message: 'QR sedang disiapkan. Silakan tunggu dan refresh.' });
+    }
+
     return res.json({ status: 'not_found' });
 });
 
+// Endpoint untuk mengecek status koneksi
 app.get('/api/status', (req, res) => {
     const sessionId = req.query.session_id;
     const client = sessions[sessionId];
@@ -123,12 +133,13 @@ app.get('/api/status', (req, res) => {
     }
 });
 
+// Endpoint untuk mengirim pesan
 app.post('/api/send', async (req, res) => {
     const { session_id, number, message } = req.body;
-    if (!session_id || !number || !message) return res.status(400).send('Missing parameters');
+    if (!session_id || !number || !message) return res.status(400).send('Parameter tidak lengkap');
 
     const client = sessions[session_id];
-    if (!client || !readyFlags[session_id]) return res.status(404).send('Session not found or not ready');
+    if (!client || !readyFlags[session_id]) return res.status(404).send('Session tidak ditemukan atau belum siap');
 
     try {
         await client.sendMessage(`${number}@c.us`, message);
@@ -139,28 +150,27 @@ app.post('/api/send', async (req, res) => {
     }
 });
 
+// Endpoint untuk memutuskan sesi
 app.get('/api/disconnect', (req, res) => {
     const sessionId = req.query.session_id;
-    if (!sessionId) return res.status(400).json({ message: 'session_id is required' });
+    if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
 
     const client = sessions[sessionId];
-    if (!client) return res.status(404).json({ message: 'Session not found' });
+    if (!client) return res.status(404).json({ message: 'Session tidak ditemukan' });
 
     client.destroy()
         .then(() => {
-            // Menghapus session dari objek sessions
             delete sessions[sessionId];
             delete qrCodes[sessionId];
             delete readyFlags[sessionId];
 
-            // Menghapus direktori session yang terkait dengan sessionId
             const sessionPath = path.join(SESSIONS_DIR, sessionId);
             if (fs.existsSync(sessionPath)) {
-                fs.rmdirSync(sessionPath, { recursive: true });
-                console.log(`🗑️ Sesi ${sessionId} terputus dan direktori session dihapus`);
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+                console.log(`🗑️ Sesi ${sessionId} terputus dan folder dihapus`);
             }
 
-            res.json({ message: `Session ${sessionId} berhasil terputus dan file session dihapus` });
+            res.json({ message: `Session ${sessionId} berhasil diputus dan file dihapus` });
         })
         .catch((err) => {
             console.error('Gagal disconnect:', err);
@@ -168,7 +178,7 @@ app.get('/api/disconnect', (req, res) => {
         });
 });
 
-
+// Menjalankan server
 app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 Server berjalan di http://localhost:${port}`);
 });
