@@ -4,6 +4,7 @@ const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 
 const app = express();
 const port = 3000;
@@ -17,14 +18,14 @@ app.use(cors({
 
 const sessions = {};
 const qrCodes = {};
-const readyFlags = {}; // Status siap
+const readyFlags = {};
+const adminNumbers = {};
 
 const SESSIONS_DIR = './sessions';
 if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR);
 }
 
-// Fungsi untuk membuat client baru
 const createClient = (sessionId) => {
     const sessionPath = path.join(SESSIONS_DIR, sessionId);
 
@@ -49,10 +50,25 @@ const createClient = (sessionId) => {
         console.log(`🔐 ${sessionId} terautentikasi`);
     });
 
-    client.on('ready', () => {
+    client.on('ready', async () => {
         console.log(`✅ ${sessionId} siap digunakan`);
         delete qrCodes[sessionId];
         readyFlags[sessionId] = true;
+
+        // 🔁 Tunggu hingga client.info.wid.user tersedia
+        let maxAttempts = 5;
+        while ((!client.info || !client.info.wid?.user) && maxAttempts > 0) {
+            console.log(`⏳ Menunggu info client untuk ${sessionId}...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            maxAttempts--;
+        }
+
+        const adminNumber = client.info?.wid?.user;
+        if (adminNumber) {
+            saveAdminNumberToDB(sessionId, adminNumber);
+        } else {
+            console.warn(`⚠️ Gagal mendapatkan adminNumber untuk ${sessionId}`);
+        }
     });
 
     client.on('disconnected', (reason) => {
@@ -61,6 +77,7 @@ const createClient = (sessionId) => {
         delete sessions[sessionId];
         delete qrCodes[sessionId];
         delete readyFlags[sessionId];
+        delete adminNumbers[sessionId];
     });
 
     client.on('auth_failure', (msg) => {
@@ -69,16 +86,38 @@ const createClient = (sessionId) => {
         delete sessions[sessionId];
         delete qrCodes[sessionId];
         delete readyFlags[sessionId];
+        delete adminNumbers[sessionId];
     });
 
     client.initialize();
     sessions[sessionId] = client;
 };
 
-// Endpoint untuk memulai sesi
+const saveAdminNumberToDB = async (sessionId, adminNumber) => {
+    if (!adminNumber) {
+        console.error('Nomor admin tidak boleh kosong');
+        return;
+    }
+
+    try {
+        await axios.post('http://localhost:8000/api/saveAdminNumber', {
+            session_id: sessionId,
+            admin_number: adminNumber
+        });
+        console.log(`✅ Nomor admin untuk session ${sessionId} berhasil disimpan`);
+    } catch (error) {
+        console.error('❌ Gagal menyimpan nomor admin ke DB:', error.response?.data || error);
+    }
+};
+
 app.get('/api/start', (req, res) => {
     const sessionId = req.query.session_id;
-    if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
+    const adminNumber = req.query.admin_number;
+    if (!sessionId || !adminNumber) {
+        return res.status(400).json({ message: 'session_id dan admin_number diperlukan' });
+    }
+
+    adminNumbers[sessionId] = adminNumber;
 
     if (!sessions[sessionId]) {
         createClient(sessionId);
@@ -87,7 +126,6 @@ app.get('/api/start', (req, res) => {
     return res.json({ message: 'Sesi dimulai' });
 });
 
-// Endpoint untuk mendapatkan QR code
 app.get('/api/qr', (req, res) => {
     const sessionId = req.query.session_id;
     if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
@@ -102,7 +140,6 @@ app.get('/api/qr', (req, res) => {
         return res.json({ status: 'scan', qrImage: qr });
     }
 
-    // Jika client belum dibuat (terhapus karena disconnect/logout), buat ulang
     if (!sessions[sessionId]) {
         createClient(sessionId);
         return res.json({ status: 'initializing', message: 'QR sedang disiapkan. Silakan tunggu dan refresh.' });
@@ -111,7 +148,6 @@ app.get('/api/qr', (req, res) => {
     return res.json({ status: 'not_found' });
 });
 
-// Endpoint untuk mengecek status koneksi
 app.get('/api/status', (req, res) => {
     const sessionId = req.query.session_id;
     const client = sessions[sessionId];
@@ -133,7 +169,6 @@ app.get('/api/status', (req, res) => {
     }
 });
 
-// Endpoint untuk mengirim pesan
 app.post('/api/send', async (req, res) => {
     const { session_id, number, message } = req.body;
     if (!session_id || !number || !message) return res.status(400).send('Parameter tidak lengkap');
@@ -142,15 +177,15 @@ app.post('/api/send', async (req, res) => {
     if (!client || !readyFlags[session_id]) return res.status(404).send('Session tidak ditemukan atau belum siap');
 
     try {
+        if (!client.info) throw new Error("Client belum sepenuhnya siap");
         await client.sendMessage(`${number}@c.us`, message);
         res.send('Pesan terkirim');
     } catch (err) {
-        console.error(err);
+        console.error('Gagal kirim:', err.message);
         res.status(500).send('Gagal kirim pesan');
     }
 });
 
-// Endpoint untuk memutuskan sesi
 app.get('/api/disconnect', (req, res) => {
     const sessionId = req.query.session_id;
     if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
@@ -163,14 +198,15 @@ app.get('/api/disconnect', (req, res) => {
             delete sessions[sessionId];
             delete qrCodes[sessionId];
             delete readyFlags[sessionId];
+            delete adminNumbers[sessionId];
 
             const sessionPath = path.join(SESSIONS_DIR, sessionId);
             if (fs.existsSync(sessionPath)) {
                 fs.rmSync(sessionPath, { recursive: true, force: true });
                 console.log(`🗑️ Sesi ${sessionId} terputus dan folder dihapus`);
             }
-            createClient(sessionId);
 
+            createClient(sessionId);
             res.json({ message: `Session ${sessionId} berhasil diputus dan file dihapus` });
         })
         .catch((err) => {
@@ -179,7 +215,6 @@ app.get('/api/disconnect', (req, res) => {
         });
 });
 
-// Menjalankan server
 app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 Server berjalan di http://localhost:${port}`);
 });
