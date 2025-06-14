@@ -31,10 +31,11 @@ const createClient = (sessionId) => {
 
     const client = new Client({
         authStrategy: new LocalAuth({ dataPath: sessionPath }),
-        puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        }
+         puppeteer: {
+        headless: true,
+        executablePath: '/usr/bin/chromium-browser', // ← PASTIKAN path ini benar!
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
     });
 
     readyFlags[sessionId] = false;
