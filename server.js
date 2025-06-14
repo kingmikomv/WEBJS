@@ -101,7 +101,7 @@ const saveAdminNumberToDB = async (sessionId, adminNumber) => {
     }
 
     try {
-        await axios.post('http://localhost:8000/api/saveAdminNumber', {
+        await axios.post('https://biller.aqtnetwork.my.id/api/saveAdminNumber', {
             session_id: sessionId,
             admin_number: adminNumber
         });
