@@ -5,8 +5,6 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const puppeteer = require('puppeteer-core');
-require('express-async-errors');
 
 const app = express();
 const port = 3000;
@@ -22,49 +20,29 @@ const sessions = {};
 const qrCodes = {};
 const readyFlags = {};
 const adminNumbers = {};
-const creatingSessions = {};
-const clientInfoCache = {};
 
 const SESSIONS_DIR = './sessions';
 if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR);
 }
 
-// ⏳ Preload Chromium sekali saja
-(async () => {
-    try {
-        console.log('⏳ Preloading Chromium...');
-        const browser = await puppeteer.launch({
-            headless: true,
-            executablePath: '/usr/bin/chromium-browser',
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-        await browser.close();
-        console.log('✅ Chromium preloaded');
-    } catch (err) {
-        console.warn('⚠️ Chromium preload gagal:', err.message);
-    }
-})();
-
 const createClient = (sessionId) => {
-    if (creatingSessions[sessionId]) return;
-    creatingSessions[sessionId] = true;
-
     const sessionPath = path.join(SESSIONS_DIR, sessionId);
 
     const client = new Client({
         authStrategy: new LocalAuth({ dataPath: sessionPath }),
-        puppeteer: {
-            headless: true,
-            executablePath: '/usr/bin/chromium-browser',
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        }
+         puppeteer: {
+        headless: true,
+        executablePath: '/usr/bin/chromium-browser', // ← PASTIKAN path ini benar!
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
     });
 
     readyFlags[sessionId] = false;
 
     client.on('qr', async (qr) => {
-        qrCodes[sessionId] = await qrcode.toDataURL(qr);
+        const qrImage = await qrcode.toDataURL(qr);
+        qrCodes[sessionId] = qrImage;
         readyFlags[sessionId] = false;
         console.log(`📸 QR diperbarui untuk ${sessionId}`);
     });
@@ -78,52 +56,50 @@ const createClient = (sessionId) => {
         delete qrCodes[sessionId];
         readyFlags[sessionId] = true;
 
-        // 🔁 Cek client.info lebih cepat (polling 300ms)
+        // 🔁 Tunggu hingga client.info.wid.user tersedia
         let maxAttempts = 5;
-        while ((!client.info || !client.info.wid?.user) && maxAttempts-- > 0) {
-            await new Promise(r => setTimeout(r, 300));
+        while ((!client.info || !client.info.wid?.user) && maxAttempts > 0) {
+            console.log(`⏳ Menunggu info client untuk ${sessionId}...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            maxAttempts--;
         }
 
         const adminNumber = client.info?.wid?.user;
         if (adminNumber) {
             saveAdminNumberToDB(sessionId, adminNumber);
-            clientInfoCache[sessionId] = {
-                id: adminNumber,
-                name: client.info.pushname || '-',
-                battery: client.info.battery || '-',
-            };
         } else {
             console.warn(`⚠️ Gagal mendapatkan adminNumber untuk ${sessionId}`);
         }
-
-        delete creatingSessions[sessionId];
     });
 
     client.on('disconnected', (reason) => {
         console.log(`❌ ${sessionId} terputus: ${reason}`);
-        cleanupSession(sessionId);
+        client.destroy();
+        delete sessions[sessionId];
+        delete qrCodes[sessionId];
+        delete readyFlags[sessionId];
+        delete adminNumbers[sessionId];
     });
 
     client.on('auth_failure', (msg) => {
         console.log(`⚠️ Gagal autentikasi untuk ${sessionId}:`, msg);
-        cleanupSession(sessionId);
+        client.destroy();
+        delete sessions[sessionId];
+        delete qrCodes[sessionId];
+        delete readyFlags[sessionId];
+        delete adminNumbers[sessionId];
     });
 
     client.initialize();
     sessions[sessionId] = client;
 };
 
-const cleanupSession = (sessionId) => {
-    sessions[sessionId]?.destroy().catch(() => {});
-    delete sessions[sessionId];
-    delete qrCodes[sessionId];
-    delete readyFlags[sessionId];
-    delete adminNumbers[sessionId];
-    delete clientInfoCache[sessionId];
-    delete creatingSessions[sessionId];
-};
-
 const saveAdminNumberToDB = async (sessionId, adminNumber) => {
+    if (!adminNumber) {
+        console.error('Nomor admin tidak boleh kosong');
+        return;
+    }
+
     try {
         await axios.post('https://biller.aqtnetwork.my.id/api/saveAdminNumber', {
             session_id: sessionId,
@@ -138,47 +114,60 @@ const saveAdminNumberToDB = async (sessionId, adminNumber) => {
 app.get('/api/start', (req, res) => {
     const sessionId = req.query.session_id;
     const adminNumber = req.query.admin_number;
-    if (!sessionId || !adminNumber) return res.status(400).json({ message: 'session_id dan admin_number diperlukan' });
+    if (!sessionId || !adminNumber) {
+        return res.status(400).json({ message: 'session_id dan admin_number diperlukan' });
+    }
 
     adminNumbers[sessionId] = adminNumber;
-    if (!sessions[sessionId]) createClient(sessionId);
 
-    res.json({ message: 'Sesi dimulai' });
+    if (!sessions[sessionId]) {
+        createClient(sessionId);
+    }
+
+    return res.json({ message: 'Sesi dimulai' });
 });
 
 app.get('/api/qr', (req, res) => {
     const sessionId = req.query.session_id;
     if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
 
-    if (readyFlags[sessionId]) return res.json({ status: 'connected' });
+    const isReady = readyFlags[sessionId];
+    if (isReady) {
+        return res.json({ status: 'connected' });
+    }
 
     const qr = qrCodes[sessionId];
-    if (qr) return res.json({ status: 'scan', qrImage: qr });
+    if (qr) {
+        return res.json({ status: 'scan', qrImage: qr });
+    }
 
-    if (!sessions[sessionId] && !creatingSessions[sessionId]) {
+    if (!sessions[sessionId]) {
         createClient(sessionId);
         return res.json({ status: 'initializing', message: 'QR sedang disiapkan. Silakan tunggu dan refresh.' });
     }
 
-    res.json({ status: 'not_found' });
+    return res.json({ status: 'not_found' });
 });
 
 app.get('/api/status', (req, res) => {
     const sessionId = req.query.session_id;
-    if (!sessionId || !sessions[sessionId]) {
-        return res.status(404).json({ status: false, message: 'Client tidak ditemukan' });
-    }
+    const client = sessions[sessionId];
+    const isReady = readyFlags[sessionId];
 
-    if (!readyFlags[sessionId]) {
-        return res.status(200).json({ status: false, message: 'Client belum siap' });
-    }
+    if (!client) return res.status(404).json({ status: false, message: 'Client tidak ditemukan' });
 
-    const user = clientInfoCache[sessionId] || {
-        id: sessions[sessionId].info?.wid?.user || '-',
-        name: sessions[sessionId].info?.pushname || '-',
-        battery: sessions[sessionId].info?.battery || '-',
-    };
-    res.json({ status: true, user });
+    if (!isReady) return res.status(200).json({ status: false, message: 'Client belum siap' });
+
+    try {
+        const user = {
+            id: client.info?.wid?.user || '-',
+            name: client.info?.pushname || '-',
+            battery: client.info?.battery || '-',
+        };
+        return res.json({ status: true, user });
+    } catch (e) {
+        return res.json({ status: false, message: 'Gagal ambil info client' });
+    }
 });
 
 app.post('/api/send', async (req, res) => {
@@ -189,6 +178,7 @@ app.post('/api/send', async (req, res) => {
     if (!client || !readyFlags[session_id]) return res.status(404).send('Session tidak ditemukan atau belum siap');
 
     try {
+        if (!client.info) throw new Error("Client belum sepenuhnya siap");
         await client.sendMessage(`${number}@c.us`, message);
         res.send('Pesan terkirim');
     } catch (err) {
@@ -197,26 +187,33 @@ app.post('/api/send', async (req, res) => {
     }
 });
 
-app.get('/api/disconnect', async (req, res) => {
+app.get('/api/disconnect', (req, res) => {
     const sessionId = req.query.session_id;
-    if (!sessionId || !sessions[sessionId]) return res.status(404).json({ message: 'Session tidak ditemukan' });
+    if (!sessionId) return res.status(400).json({ message: 'session_id diperlukan' });
 
-    try {
-        await sessions[sessionId].destroy();
-        cleanupSession(sessionId);
+    const client = sessions[sessionId];
+    if (!client) return res.status(404).json({ message: 'Session tidak ditemukan' });
 
-        const sessionPath = path.join(SESSIONS_DIR, sessionId);
-        if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-            console.log(`🗑️ Sesi ${sessionId} terputus dan folder dihapus`);
-        }
+    client.destroy()
+        .then(() => {
+            delete sessions[sessionId];
+            delete qrCodes[sessionId];
+            delete readyFlags[sessionId];
+            delete adminNumbers[sessionId];
 
-        createClient(sessionId);
-        res.json({ message: `Session ${sessionId} berhasil diputus dan file dihapus` });
-    } catch (err) {
-        console.error('Gagal disconnect:', err);
-        res.status(500).json({ message: 'Gagal disconnect sesi' });
-    }
+            const sessionPath = path.join(SESSIONS_DIR, sessionId);
+            if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+                console.log(`🗑️ Sesi ${sessionId} terputus dan folder dihapus`);
+            }
+
+            createClient(sessionId);
+            res.json({ message: `Session ${sessionId} berhasil diputus dan file dihapus` });
+        })
+        .catch((err) => {
+            console.error('Gagal disconnect:', err);
+            res.status(500).json({ message: 'Gagal disconnect sesi' });
+        });
 });
 
 app.listen(port, '0.0.0.0', () => {
