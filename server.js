@@ -30,6 +30,15 @@ if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR);
 }
 
+// 🔁 Pulihkan semua session dari folder
+fs.readdir(SESSIONS_DIR, (err, folders) => {
+    if (err) return console.error('❌ Gagal baca folder sesi:', err);
+    folders.forEach(sessionId => {
+        console.log(`🔁 Memulihkan sesi: ${sessionId}`);
+        createClient(sessionId);
+    });
+});
+
 // ⏳ Preload Chromium sekali saja
 (async () => {
     try {
@@ -46,7 +55,7 @@ if (!fs.existsSync(SESSIONS_DIR)) {
     }
 })();
 
-const createClient = (sessionId) => {
+function createClient(sessionId) {
     if (creatingSessions[sessionId]) return;
     creatingSessions[sessionId] = true;
 
@@ -78,7 +87,6 @@ const createClient = (sessionId) => {
         delete qrCodes[sessionId];
         readyFlags[sessionId] = true;
 
-        // 🔁 Cek client.info lebih cepat (polling 300ms)
         let maxAttempts = 5;
         while ((!client.info || !client.info.wid?.user) && maxAttempts-- > 0) {
             await new Promise(r => setTimeout(r, 300));
@@ -111,9 +119,9 @@ const createClient = (sessionId) => {
 
     client.initialize();
     sessions[sessionId] = client;
-};
+}
 
-const cleanupSession = (sessionId) => {
+function cleanupSession(sessionId) {
     sessions[sessionId]?.destroy().catch(() => {});
     delete sessions[sessionId];
     delete qrCodes[sessionId];
@@ -121,9 +129,9 @@ const cleanupSession = (sessionId) => {
     delete adminNumbers[sessionId];
     delete clientInfoCache[sessionId];
     delete creatingSessions[sessionId];
-};
+}
 
-const saveAdminNumberToDB = async (sessionId, adminNumber) => {
+async function saveAdminNumberToDB(sessionId, adminNumber) {
     try {
         await axios.post('https://biller.aqtnetwork.my.id/api/saveAdminNumber', {
             session_id: sessionId,
@@ -133,7 +141,7 @@ const saveAdminNumberToDB = async (sessionId, adminNumber) => {
     } catch (error) {
         console.error('❌ Gagal menyimpan nomor admin ke DB:', error.response?.data || error);
     }
-};
+}
 
 app.get('/api/start', (req, res) => {
     const sessionId = req.query.session_id;
